@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Snapchat Streak Recoverer",
+  "version": "1.0.0",
+  "description": "Automated Snapchat support form submitter for recovering lost streaks. Manage profiles, friend lists, and bulk-submit recovery requests.",
+  "author": "Abdul Haseeb",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Snapchat Streak Recoverer"
+  },
+
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://help.snapchat.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://help.snapchat.com/hc/*/requests/new*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
