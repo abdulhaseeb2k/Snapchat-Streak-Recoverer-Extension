@@ -1,13 +1,13 @@
 /* Snapchat Streak Recoverer — Chrome Extension Popup Logic */
 
 // ═══════════════════ CONSTANTS ═══════════════════
-const VERSION = "1.0";
+const VERSION = "1.01";
 const APP_NAME = "Snapchat Streak Recoverer";
 const DEVELOPER = "Abdul Haseeb";
-const GITHUB_URL = "https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer";
+const GITHUB_URL = "https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension";
 const FORM_URL = "https://help.snapchat.com/hc/en-us/requests/new?co=true&ticket_form_id=149423";
 const DEFAULT_PROFILE = { username: "", email: "", mobile_number: "", device: "", refresh_delay: 1.0 };
-const DEFAULT_APP = { appearance_mode: "Dark", view_mode: "Grid" };
+const DEFAULT_APP = { appearance_mode: "Dark", view_mode: "Grid", overlay_position: "Top" };
 
 // ═══════════════════ DATA MANAGER ═══════════════════
 class DataManager {
@@ -73,6 +73,8 @@ class DataManager {
 // ═══════════════════ GLOBALS ═══════════════════
 const data = new DataManager();
 let searchQuery = "";
+let filterSelectedOnly = false;
+let sessionFailures = [];
 
 // ═══════════════════ INIT ═══════════════════
 document.addEventListener("DOMContentLoaded", async () => {
@@ -99,6 +101,7 @@ function bindEvents() {
   $("#btn-settings").addEventListener("click", openSettingsModal);
   $("#btn-select-all").addEventListener("click", () => bulkSelect(true));
   $("#btn-deselect-all").addEventListener("click", () => bulkSelect(false));
+  $("#selection-counter").addEventListener("click", toggleSelectedFilter);
   $("#search-input").addEventListener("input", e => { searchQuery = e.target.value.toLowerCase().trim(); renderFriends(); });
   $("#btn-add-friend").addEventListener("click", addFriend);
   $("#btn-recover").addEventListener("click", startRecovery);
@@ -106,6 +109,12 @@ function bindEvents() {
 }
 
 function $(sel) { return document.querySelector(sel); }
+
+function toggleSelectedFilter() {
+  filterSelectedOnly = !filterSelectedOnly;
+  $("#selection-counter").classList.toggle("filtering", filterSelectedOnly);
+  renderFriends();
+}
 
 // ═══════════════════ FULL UI REFRESH ═══════════════════
 function refreshUI() {
@@ -138,6 +147,10 @@ function renderFriends() {
     );
   }
 
+  if (filterSelectedOnly) {
+    indexed = indexed.filter(({ f }) => f.selected);
+  }
+
   updateCounter(indexed.length, allFriends.length);
 
   if (indexed.length === 0) {
@@ -164,22 +177,22 @@ function gridCard(f, i) {
   const name = f.name || f.username;
   const display = name.length > 20 ? name.slice(0, 17) + "..." : name;
   const uname = f.name && f.name !== f.username ? `<div class="friend-username">@${f.username.length > 22 ? f.username.slice(0, 19) + "..." : f.username}</div>` : "";
-  return `<div class="friend-card" data-open="${i}"><div class="card-header"><span class="toggle-icon ${sel ? "selected" : "unselected"}" data-toggle="${i}">${sel ? "[x]" : "[ ]"}</span><span class="friend-name">${esc(display)}</span></div>${uname}</div>`;
+  return `<div class="friend-card ${sel ? "is-selected" : ""}" data-open="${i}"><div class="card-header"><span class="checkbox-custom ${sel ? "checked" : ""}" data-toggle="${i}"></span><span class="friend-name">${esc(display)}</span></div>${uname}</div>`;
 }
 
 function listRow(f, i) {
   const sel = f.selected;
   const name = f.name || f.username;
   const uname = f.name && f.name !== f.username ? `<div class="friend-username">@${esc(f.username)}</div>` : "";
-  return `<div class="friend-row" data-open="${i}"><span class="toggle-icon ${sel ? "selected" : "unselected"}" data-toggle="${i}">${sel ? "[x]" : "[ ]"}</span><div class="row-info"><div class="friend-name">${esc(name)}</div>${uname}</div><button class="row-edit-btn" data-edit="${i}">✎ Edit</button></div>`;
+  return `<div class="friend-row ${sel ? "is-selected" : ""}" data-open="${i}"><span class="checkbox-custom ${sel ? "checked" : ""}" data-toggle="${i}"></span><div class="row-info"><div class="friend-name">${esc(name)}</div>${uname}</div><button class="row-edit-btn" data-edit="${i}">✎ Edit</button></div>`;
 }
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
 function updateCounter(shown, total) {
   const sel = data.getSelectedCount();
-  let t = `${sel} / ${total} Selected`;
-  if (shown !== total) t += ` (${shown} matching)`;
+  let t = filterSelectedOnly ? `Showing ${sel} Selected` : `${sel} / ${total} Selected`;
+  if (!filterSelectedOnly && shown !== total) t += ` (${shown} matching)`;
   $("#selection-counter").textContent = t;
 }
 
@@ -345,7 +358,14 @@ function openSettingsModal() {
     <div class="modal-field"><label class="modal-label">Friends List Style</label>
       <select class="modal-select" id="m-viewmode"><option ${s.view_mode === "Grid" ? "selected" : ""}>Grid</option><option ${s.view_mode === "List" ? "selected" : ""}>List</option></select>
     </div>
+    <div class="modal-field"><label class="modal-label">Overlay Position</label>
+      <select class="modal-select" id="m-overlay-pos">
+        <option ${s.overlay_position === "Top" ? "selected" : ""}>Top</option>
+        <option ${s.overlay_position === "Bottom" ? "selected" : ""}>Bottom</option>
+      </select>
+    </div>
     <div class="modal-separator"></div>
+    <button class="modal-btn secondary" id="m-update" style="width:100%;margin-bottom:8px">🔄 Check for Updates</button>
     <button class="modal-btn secondary" id="m-help" style="width:100%;margin-bottom:8px">❓ How to Use (Help)</button>
     <button class="modal-btn secondary" id="m-about" style="width:100%;margin-bottom:16px">👨‍💻 About Developer</button>
     <div class="modal-actions"><button class="modal-btn primary" id="m-ssave">Save Settings</button></div>
@@ -354,10 +374,12 @@ function openSettingsModal() {
   $("#m-ssave").addEventListener("click", async () => {
     data.appSettings.appearance_mode = $("#m-appearance").value;
     data.appSettings.view_mode = $("#m-viewmode").value;
+    data.appSettings.overlay_position = $("#m-overlay-pos").value;
     await data.saveAppSettings();
     applyTheme();
     closeModal(); renderFriends(); toast("Settings saved!", "success");
   });
+  $("#m-update").addEventListener("click", () => { closeModal(); openUpdateCheck(); });
   $("#m-help").addEventListener("click", () => { closeModal(); openHelp(); });
   $("#m-about").addEventListener("click", () => { closeModal(); openAbout(); });
 }
@@ -387,7 +409,7 @@ function openHelp() {
 
 7. Done:
    The status bar shows completion when all friends are processed.</div>
-    <div class="modal-actions"><button class="modal-btn secondary" onclick="closeModal()">Close</button></div>
+    <div class="modal-actions"><button class="modal-btn secondary" data-close-modal>Close</button></div>
   `);
 }
 
@@ -403,8 +425,57 @@ Developed by: ${DEVELOPER}
 For updates and support, visit our GitHub.</div>
       <a href="${GITHUB_URL}" target="_blank" class="github-btn">Visit GitHub</a>
     </div>
-    <div class="modal-actions" style="margin-top:16px"><button class="modal-btn secondary" onclick="closeModal()">Close</button></div>
+    <div class="modal-actions" style="margin-top:16px"><button class="modal-btn secondary" data-close-modal>Close</button></div>
   `);
+}
+
+function openUpdateCheck() {
+  showModal(`
+    <div class="about-center">
+      <div class="modal-title">🔄 Check for Updates</div>
+      <div id="update-status" style="padding: 20px 0; color: var(--text-muted); text-align: center;">
+        <div class="sr-spinner-modal"></div>
+        <p style="margin-top: 12px;">Checking GitHub for latest version...</p>
+      </div>
+    </div>
+    <div class="modal-actions"><button class="modal-btn secondary" data-close-modal>Close</button></div>
+  `);
+
+  const RELEASES_URL = "https://api.github.com/repos/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension/releases/latest";
+
+  fetch(RELEASES_URL)
+    .then(r => r.json())
+    .then(release => {
+      const latest = (release.tag_name || "").replace(/^v/i, "");
+      const current = VERSION;
+      const statusEl = document.getElementById("update-status");
+      if (!statusEl) return;
+
+      if (!latest) {
+        statusEl.innerHTML = `<p style="color: var(--danger)">❌ Could not fetch version info.</p>`;
+        return;
+      }
+
+      if (latest === current) {
+        statusEl.innerHTML = `
+          <div style="font-size: 32px">✅</div>
+          <p style="color: var(--accent); font-weight: 700; margin-top: 8px;">You're up to date!</p>
+          <p style="font-size: 12px; color: var(--text-muted);">Current version: v${current}</p>
+        `;
+      } else {
+        statusEl.innerHTML = `
+          <div style="font-size: 32px">🎉</div>
+          <p style="color: #FFFC00; font-weight: 700; margin-top: 8px;">New version available!</p>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Your version: v${current} &rarr; Latest: v${latest}</p>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">${esc(release.name || "")}</p>
+          <a href="${GITHUB_URL}/releases/latest" target="_blank" class="github-btn" style="font-size: 13px;">🔗 Download Update from GitHub</a>
+        `;
+      }
+    })
+    .catch(() => {
+      const statusEl = document.getElementById("update-status");
+      if (statusEl) statusEl.innerHTML = `<p style="color: var(--danger)">❌ Network error. Please check your connection.</p>`;
+    });
 }
 
 // ═══════════════════ IMPORT / EXPORT ═══════════════════
@@ -455,13 +526,15 @@ async function startRecovery() {
 
   const btn = $("#btn-recover");
   btn.disabled = true; btn.textContent = "⏳ Running..."; btn.classList.add("running");
+  sessionFailures = []; // Reset for new run
   setStatus("processing", 0, selected.length, selected[0]);
 
   try {
     await chrome.runtime.sendMessage({
       action: "startRecovery",
       settings, friends: selected,
-      delay: settings.refresh_delay || 1.0
+      delay: settings.refresh_delay || 1.0,
+      overlay_position: data.appSettings.overlay_position || "Top"
     });
   } catch (e) {
     setStatus("error", 0, 0, e.message);
@@ -473,11 +546,19 @@ async function startRecovery() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === "recoveryProgress") {
     setStatus("processing", msg.current, msg.total, msg.friend);
+  } else if (msg.action === "friendFailed") {
+    sessionFailures.push({ friend: msg.friend, error: msg.error });
+    setStatus("friendFailed", sessionFailures.length);
   } else if (msg.action === "recoveryComplete") {
+    if (msg.failures) sessionFailures = msg.failures;
     setStatus("done");
     const btn = $("#btn-recover");
     btn.disabled = false; btn.textContent = "🚀 RECOVER SELECTED STREAKS"; btn.classList.remove("running");
-    toast("All friends processed!", "success");
+    if (sessionFailures.length > 0) {
+      toast(`${sessionFailures.length} issues during recovery`, "error");
+    } else {
+      toast("All friends processed!", "success");
+    }
   } else if (msg.action === "recoveryError") {
     setStatus("error", 0, 0, msg.error);
     const btn = $("#btn-recover");
@@ -490,13 +571,28 @@ function setStatus(type, current, total, detail) {
   const text = $("#status-text");
   const bar = $("#progress-bar-container");
   const fill = $("#progress-bar");
+  const statusBar = $("#status-bar");
+
+  // Remove previous error states
+  statusBar.classList.remove("has-errors", "shaking");
+
   if (type === "processing") {
     const trunc = detail && detail.length > 18 ? detail.slice(0, 15) + "..." : detail;
-    text.textContent = `⏳ [${current + 1}/${total}] Processing: ${trunc}`;
+    text.innerHTML = `⏳ [${current + 1}/${total}] Processing: ${trunc}`;
     bar.classList.remove("hidden");
     fill.style.width = `${((current + 1) / total) * 100}%`;
+  } else if (type === "friendFailed") {
+    // Briefly shake on new failure
+    statusBar.classList.add("shaking");
+    setTimeout(() => statusBar.classList.remove("shaking"), 500);
   } else if (type === "done") {
-    text.textContent = "🎉 All friends processed!";
+    if (sessionFailures.length > 0) {
+      statusBar.classList.add("has-errors");
+      text.innerHTML = `🎉 Done (with <span class="error-link" id="view-errors">${sessionFailures.length} errors</span>)`;
+      $("#view-errors").addEventListener("click", showErrorLog);
+    } else {
+      text.textContent = "🎉 All friends processed!";
+    }
     fill.style.width = "100%";
   } else if (type === "error") {
     const msg = detail && detail.length > 40 ? detail.slice(0, 37) + "..." : detail;
@@ -506,13 +602,43 @@ function setStatus(type, current, total, detail) {
     text.textContent = "✅ Ready";
     bar.classList.add("hidden");
   }
+
+  // Always show error count if during process
+  if (type === "processing" && sessionFailures.length > 0) {
+    statusBar.classList.add("has-errors");
+    text.innerHTML += ` <span class="error-badge" id="view-errors-mini">⚠️ ${sessionFailures.length}</span>`;
+    const mini = $("#view-errors-mini");
+    if (mini) mini.addEventListener("click", showErrorLog);
+  }
+}
+
+function showErrorLog() {
+  const list = sessionFailures.map(f => `
+    <div class="error-log-item">
+      <div class="error-log-friend">Friend: <strong>${esc(f.friend)}</strong></div>
+      <div class="error-log-msg">${esc(f.error)}</div>
+    </div>
+  `).join("");
+
+  showModal(`
+    <div class="modal-title">Recovery Error Log</div>
+    <div class="error-log-container">${list || "<p>No errors recorded</p>"}</div>
+    <div class="modal-actions">
+      <button class="modal-btn secondary" data-close-modal>Close</button>
+    </div>
+  `);
 }
 
 // ═══════════════════ MODAL SYSTEM ═══════════════════
 function showModal(html) {
   $("#modal-content").innerHTML = html;
   $("#modal-overlay").classList.remove("hidden");
+  // Wire overlay background click
   $("#modal-overlay").addEventListener("click", e => { if (e.target === $("#modal-overlay")) closeModal(); });
+  // Wire all [data-close-modal] buttons — safe alternative to onclick= (CSP compliant)
+  document.querySelectorAll("[data-close-modal]").forEach(btn => {
+    btn.addEventListener("click", closeModal);
+  });
 }
 
 function closeModal() { $("#modal-overlay").classList.add("hidden"); }

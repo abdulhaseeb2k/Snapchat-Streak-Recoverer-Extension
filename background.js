@@ -1,11 +1,12 @@
 /* Background Service Worker — orchestrates recovery across tabs */
 
 const FORM_URL = "https://help.snapchat.com/hc/en-us/requests/new?co=true&ticket_form_id=149423";
+const NOTIF_ID = "streak-recovery-notif";
 let recoveryState = null;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "startRecovery") {
-    startRecovery(msg.settings, msg.friends, msg.delay);
+    startRecovery(msg.settings, msg.friends, msg.delay, msg.overlay_position);
     sendResponse({ ok: true });
   } else if (msg.action === "formFilled") {
     handleFormFilled();
@@ -15,8 +16,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-async function startRecovery(settings, friends, delay) {
-  recoveryState = { settings, friends, delay, current: 0, tabId: null };
+async function startRecovery(settings, friends, delay, overlay_position) {
+  recoveryState = { settings, friends, delay, current: 0, tabId: null, failures: [], overlay_position: overlay_position || "Top" };
   await processNext();
 }
 
@@ -25,12 +26,14 @@ async function processNext() {
   const { friends, current, settings, delay } = recoveryState;
 
   if (current >= friends.length) {
-    broadcast({ action: "recoveryComplete" });
+    updateNotification(current, friends.length, "", true);
+    broadcast({ action: "recoveryComplete", failures: recoveryState.failures });
     recoveryState = null;
     return;
   }
 
   const friend = friends[current];
+  updateNotification(current, friends.length, friend);
   broadcast({ action: "recoveryProgress", current, total: friends.length, friend });
 
   try {
@@ -49,10 +52,17 @@ async function processNext() {
       action: "fillForm",
       settings,
       friendUsername: friend,
+      current: current + 1,
+      total: friends.length,
+      overlay_position: recoveryState.overlay_position,
       autoSubmit: true
     });
   } catch (e) {
     console.error("[BG] Error processing:", friend, e);
+    const errorMsg = e.message || "Unknown error";
+    recoveryState.failures.push({ friend, error: errorMsg });
+    broadcast({ action: "friendFailed", friend, error: errorMsg });
+    
     // Try to continue with next friend
     recoveryState.current++;
     setTimeout(() => processNext(), 1000);
@@ -104,4 +114,22 @@ function waitForTabLoad(tabId) {
 
 function broadcast(msg) {
   chrome.runtime.sendMessage(msg).catch(() => {});
+}
+
+function updateNotification(current, total, friend, isComplete = false) {
+  const options = {
+    type: isComplete ? "basic" : "progress",
+    iconUrl: "icons/icon128.png",
+    title: isComplete ? "Recovery Complete! 🎉" : "Recovering Streaks...",
+    message: isComplete 
+      ? `All ${total} friends have been processed.` 
+      : `Next: ${friend} (${current + 1} of ${total})`,
+    priority: 1
+  };
+  
+  if (!isComplete) {
+    options.progress = Math.round((current / total) * 100);
+  }
+
+  chrome.notifications.create(NOTIF_ID, options);
 }

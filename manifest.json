@@ -25,11 +25,13 @@
     "storage",
     "tabs",
     "activeTab",
-    "scripting"
+    "scripting",
+    "notifications"
   ],
 
   "host_permissions": [
-    "https://help.snapchat.com/*"
+    "https://help.snapchat.com/*",
+    "https://api.github.com/*"
   ],
 
   "background": {
