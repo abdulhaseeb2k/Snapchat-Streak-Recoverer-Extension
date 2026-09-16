@@ -111,6 +111,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
     performSync(true);
   }
+
+  // Automatic GitHub release update check
+  checkExtensionUpdatesAuto();
 });
 
 function applyTheme() {
@@ -485,6 +488,111 @@ For updates and support, visit our GitHub.</div>
   `);
 }
 
+function isVersionNewer(latest, current) {
+  if (!latest || !current) return false;
+  const lParts = latest.trim().replace(/^v/i, "").split(".").map(p => parseInt(p, 10) || 0);
+  const cParts = current.trim().replace(/^v/i, "").split(".").map(p => parseInt(p, 10) || 0);
+  const max = Math.max(lParts.length, cParts.length);
+  for (let i = 0; i < max; i++) {
+    const l = lParts[i] || 0;
+    const c = cParts[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+
+async function checkExtensionUpdatesAuto() {
+  try {
+    const res = await chrome.storage.local.get(["lastUpdateCheck", "cachedUpdate", "dismissedUpdateVersion"]);
+    const now = Date.now();
+    const THREE_HOURS = 3 * 60 * 60 * 1000;
+
+    // Use cached if recent
+    if (res.lastUpdateCheck && (now - res.lastUpdateCheck < THREE_HOURS) && res.cachedUpdate) {
+      if (res.cachedUpdate.isAvailable && res.dismissedUpdateVersion !== res.cachedUpdate.latestVersion) {
+        showUpdateBanner(res.cachedUpdate);
+      }
+      return;
+    }
+
+    const RELEASES_URL = "https://api.github.com/repos/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension/releases/latest";
+    const resp = await fetch(RELEASES_URL);
+    if (!resp.ok) return;
+    const release = await resp.json();
+    const latest = (release.tag_name || "").replace(/^v/i, "");
+    const current = VERSION;
+
+    const isAvailable = isVersionNewer(latest, current);
+    const updateData = {
+      isAvailable,
+      latestVersion: latest,
+      currentVersion: current,
+      releaseName: release.name || `v${latest}`,
+      releaseNotes: release.body || "",
+      releaseUrl: release.html_url || `${GITHUB_URL}/releases/latest`
+    };
+
+    await chrome.storage.local.set({
+      lastUpdateCheck: now,
+      cachedUpdate: updateData
+    });
+
+    if (isAvailable && res.dismissedUpdateVersion !== latest) {
+      showUpdateBanner(updateData);
+    }
+  } catch (e) {
+    console.warn("Auto update check failed:", e);
+  }
+}
+
+function showUpdateBanner(updateData) {
+  const banner = $("#update-banner");
+  const text = $("#update-banner-text");
+  if (!banner || !text) return;
+
+  text.textContent = `v${updateData.latestVersion} Available`;
+  banner.classList.remove("hidden");
+
+  const viewBtn = $("#btn-view-update");
+  if (viewBtn) {
+    viewBtn.onclick = () => {
+      openDetailedUpdateModal(updateData);
+    };
+  }
+
+  const dismissBtn = $("#btn-dismiss-update");
+  if (dismissBtn) {
+    dismissBtn.onclick = async () => {
+      banner.classList.add("hidden");
+      await chrome.storage.local.set({ dismissedUpdateVersion: updateData.latestVersion });
+    };
+  }
+}
+
+function openDetailedUpdateModal(updateData) {
+  showModal(`
+    <div class="about-center">
+      <div class="modal-title">🎉 Update Available!</div>
+      <p style="color:#FFFC00; font-weight:700; margin-top:8px;">Version v${esc(updateData.latestVersion)}</p>
+      <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">Your version: v${esc(updateData.currentVersion)} &rarr; Latest: v${esc(updateData.latestVersion)}</p>
+      ${updateData.releaseNotes ? `<div style="background:var(--card-bg);padding:8px 12px;border-radius:6px;font-size:11px;color:var(--text-muted);max-height:100px;overflow-y:auto;text-align:left;margin-bottom:12px;">${esc(updateData.releaseNotes)}</div>` : ""}
+      
+      <div class="update-steps-box">
+        <strong>⚡ How to Update in 2 Steps:</strong>
+        <ol>
+          <li><strong>Update Files:</strong> If using git, run <code>git pull</code> in your extension folder. (Or download the latest release ZIP from GitHub and extract here).</li>
+          <li><strong>Reload Extension:</strong> Open <code>chrome://extensions</code> and click the <strong>↻ (Reload)</strong> icon on this extension card.</li>
+        </ol>
+        <span style="font-size:10px; color:var(--accent);">✅ All your accounts, friends, and settings remain 100% intact!</span>
+      </div>
+
+      <a href="${esc(updateData.releaseUrl)}" target="_blank" class="github-btn" style="width:100%;margin-top:6px;">🔗 View Release on GitHub</a>
+    </div>
+    <div class="modal-actions" style="margin-top:14px;"><button class="modal-btn secondary" data-close-modal>Close</button></div>
+  `);
+}
+
 function openUpdateCheck() {
   showModal(`
     <div class="about-center">
@@ -508,24 +616,28 @@ function openUpdateCheck() {
       if (!statusEl) return;
 
       if (!latest) {
-        statusEl.innerHTML = `<p style="color: var(--danger)">❌ Could not fetch version info.</p>`;
+        statusEl.innerHTML = `<p style="color: var(--danger)">❌ No release published yet on GitHub.</p>`;
         return;
       }
 
-      if (latest === current) {
+      const isAvailable = isVersionNewer(latest, current);
+      if (!isAvailable) {
         statusEl.innerHTML = `
           <div style="font-size: 32px">✅</div>
           <p style="color: var(--accent); font-weight: 700; margin-top: 8px;">You're up to date!</p>
           <p style="font-size: 12px; color: var(--text-muted);">Current version: v${current}</p>
         `;
       } else {
-        statusEl.innerHTML = `
-          <div style="font-size: 32px">🎉</div>
-          <p style="color: #FFFC00; font-weight: 700; margin-top: 8px;">New version available!</p>
-          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Your version: v${current} &rarr; Latest: v${latest}</p>
-          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">${esc(release.name || "")}</p>
-          <a href="${GITHUB_URL}/releases/latest" target="_blank" class="github-btn" style="font-size: 13px;">🔗 Download Update from GitHub</a>
-        `;
+        const updateData = {
+          isAvailable: true,
+          latestVersion: latest,
+          currentVersion: current,
+          releaseName: release.name || `v${latest}`,
+          releaseNotes: release.body || "",
+          releaseUrl: release.html_url || `${GITHUB_URL}/releases/latest`
+        };
+        closeModal();
+        openDetailedUpdateModal(updateData);
       }
     })
     .catch(() => {
