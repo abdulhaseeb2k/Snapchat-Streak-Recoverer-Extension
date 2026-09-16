@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Snapchat Streak Recoverer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Automated Snapchat support form submitter for recovering lost streaks. Manage profiles, friend lists, and bulk-submit recovery requests.",
   "author": "Abdul Haseeb",
 

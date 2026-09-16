@@ -1,7 +1,7 @@
 /* Snapchat Streak Recoverer — Chrome Extension Popup Logic */
 
 // ═══════════════════ CONSTANTS ═══════════════════
-const VERSION = "1.01";
+const VERSION = "1.1.0";
 const APP_NAME = "Snapchat Streak Recoverer";
 const DEVELOPER = "Abdul Haseeb";
 const GITHUB_URL = "https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension";

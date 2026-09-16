@@ -6,7 +6,7 @@
 
 **Automate your Snapchat streak recovery requests — fast, bulk, and effortless.**
 
-[![Version](https://img.shields.io/badge/version-1.01-yellow?style=for-the-badge&logo=snapchat)](https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-yellow?style=for-the-badge&logo=snapchat)](https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension/releases)
 [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 [![Manifest](https://img.shields.io/badge/manifest-v3-blue?style=for-the-badge&logo=googlechrome)](manifest.json)
 [![Open Source](https://img.shields.io/badge/open%20source-%E2%9D%A4-red?style=for-the-badge)](https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Extension)
