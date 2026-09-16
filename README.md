@@ -19,6 +19,11 @@
 
 ## ✨ Features
 
+### ☁ Real-Time Cloud Synchronization (Android App Cross-Sync)
+- **Google Sign-In**: Authenticate using your Google account via `chrome.identity.launchWebAuthFlow` and Firebase Auth.
+- **Cross-Platform Parity**: Synchronizes profiles and friend lists bi-directionally with the [**SSR Android Application**](https://github.com/abdulhaseeb2k/Snapchat-Streak-Recoverer-Android) via Cloud Firestore.
+- **Offline-First & Conflict Resolution**: Changes made on either desktop or mobile are reconciled automatically with Last-Write-Wins timestamps and soft-delete propagation.
+
 ### 👤 Multi-Profile Management
 - Create **multiple accounts** (profiles) — one for each Snapchat account you manage
 - Store your Snapchat username, email, mobile number, and device per profile
