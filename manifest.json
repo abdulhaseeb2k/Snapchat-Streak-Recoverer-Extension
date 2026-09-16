@@ -26,12 +26,17 @@
     "tabs",
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "identity"
   ],
 
   "host_permissions": [
     "https://help.snapchat.com/*",
-    "https://api.github.com/*"
+    "https://api.github.com/*",
+    "https://identitytoolkit.googleapis.com/*",
+    "https://securetoken.googleapis.com/*",
+    "https://firestore.googleapis.com/*",
+    "https://accounts.google.com/*"
   ],
 
   "background": {

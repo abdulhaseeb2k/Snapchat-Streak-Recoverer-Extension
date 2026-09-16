@@ -44,11 +44,21 @@ class DataManager {
 
   addProfile(name, settings) {
     if (this.profiles[name]) return false;
-    this.profiles[name] = { settings: settings || { ...DEFAULT_PROFILE }, friends: [] };
+    const syncId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : "ext-p-" + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    this.profiles[name] = {
+      syncId,
+      settings: settings || { ...DEFAULT_PROFILE },
+      friends: [],
+      updatedAt: Date.now()
+    };
     return true;
   }
 
-  deleteProfile(name) {
+  async deleteProfile(name) {
+    const prof = this.profiles[name];
+    if (prof && prof.syncId && typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
+      cloudSync.markProfileDeleted(prof.syncId);
+    }
     delete this.profiles[name];
     if (this.currentProfile === name)
       this.currentProfile = Object.keys(this.profiles)[0] || null;
@@ -57,7 +67,17 @@ class DataManager {
   addFriend(username, name) {
     const friends = this.getFriends();
     if (friends.some(f => f.username.toLowerCase() === username.toLowerCase())) return false;
-    friends.push({ username, name, selected: true });
+    const syncId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : "ext-f-" + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    friends.push({
+      syncId,
+      username,
+      name,
+      selected: true,
+      updatedAt: Date.now()
+    });
+    if (this.currentProfile && this.profiles[this.currentProfile]) {
+      this.profiles[this.currentProfile].updatedAt = Date.now();
+    }
     return true;
   }
 
@@ -79,9 +99,18 @@ let sessionFailures = [];
 // ═══════════════════ INIT ═══════════════════
 document.addEventListener("DOMContentLoaded", async () => {
   await data.load();
+  if (typeof cloudSync !== "undefined") {
+    await cloudSync.init();
+    updateSyncIndicator();
+  }
   applyTheme();
   refreshUI();
   bindEvents();
+
+  // Background auto-sync if logged in
+  if (typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
+    performSync(true);
+  }
 });
 
 function applyTheme() {
@@ -97,6 +126,7 @@ function applyTheme() {
 
 // ═══════════════════ EVENT BINDING ═══════════════════
 function bindEvents() {
+  $("#btn-sync").addEventListener("click", openCloudSyncModal);
   $("#btn-profile").addEventListener("click", openProfileMenu);
   $("#btn-settings").addEventListener("click", openSettingsModal);
   $("#btn-select-all").addEventListener("click", () => bulkSelect(true));
@@ -201,6 +231,10 @@ async function toggleFriend(i) {
   const friends = data.getFriends();
   if (i >= 0 && i < friends.length) {
     friends[i].selected = !friends[i].selected;
+    friends[i].updatedAt = Date.now();
+    if (data.currentProfile && data.profiles[data.currentProfile]) {
+      data.profiles[data.currentProfile].updatedAt = Date.now();
+    }
     await data.saveProfiles();
     renderFriends();
   }
@@ -208,10 +242,16 @@ async function toggleFriend(i) {
 
 async function bulkSelect(val) {
   const friends = data.getFriends();
+  const now = Date.now();
   friends.forEach(f => {
-    if (!searchQuery || f.username.toLowerCase().includes(searchQuery) || (f.name || "").toLowerCase().includes(searchQuery))
+    if (!searchQuery || f.username.toLowerCase().includes(searchQuery) || (f.name || "").toLowerCase().includes(searchQuery)) {
       f.selected = val;
+      f.updatedAt = now;
+    }
   });
+  if (data.currentProfile && data.profiles[data.currentProfile]) {
+    data.profiles[data.currentProfile].updatedAt = now;
+  }
   await data.saveProfiles();
   renderFriends();
 }
@@ -249,12 +289,22 @@ function openEditFriend(i) {
     if (friends.some((x, j) => j !== i && x.username.toLowerCase() === uname.toLowerCase())) { toast("Username already exists", "error"); return; }
     friends[i].username = uname;
     friends[i].name = $("#m-fname").value.trim();
+    friends[i].updatedAt = Date.now();
+    if (data.currentProfile && data.profiles[data.currentProfile]) {
+      data.profiles[data.currentProfile].updatedAt = Date.now();
+    }
     await data.saveProfiles();
     closeModal(); renderFriends(); toast("Friend updated!", "success");
   });
   $("#m-fdel").addEventListener("click", async () => {
     if (!confirm("Delete this friend?")) return;
-    friends.splice(i, 1);
+    const removed = friends.splice(i, 1)[0];
+    if (removed && removed.syncId && data.profiles[data.currentProfile]?.syncId && typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
+      cloudSync.markFriendDeleted(data.profiles[data.currentProfile].syncId, removed.syncId);
+    }
+    if (data.currentProfile && data.profiles[data.currentProfile]) {
+      data.profiles[data.currentProfile].updatedAt = Date.now();
+    }
     await data.saveProfiles();
     closeModal(); renderFriends(); toast("Friend deleted", "success");
   });
@@ -331,6 +381,7 @@ function openProfileDetails(name, isNew) {
       data.currentProfile = pname;
     } else {
       data.profiles[name].settings = newSettings;
+      data.profiles[name].updatedAt = Date.now();
     }
     await data.saveProfiles();
     closeModal(); refreshUI(); toast(isNew ? "Account created!" : "Details saved!", "success");
@@ -340,7 +391,7 @@ function openProfileDetails(name, isNew) {
     const del = $("#m-pdel");
     if (del) del.addEventListener("click", async () => {
       if (!confirm("Delete this profile?")) return;
-      data.deleteProfile(name);
+      await data.deleteProfile(name);
       await data.saveProfiles();
       closeModal(); refreshUI(); toast("Profile deleted", "success");
     });
@@ -350,6 +401,9 @@ function openProfileDetails(name, isNew) {
 // ═══════════════════ SETTINGS MODAL ═══════════════════
 function openSettingsModal() {
   const s = data.appSettings;
+  const isAuth = typeof cloudSync !== "undefined" && cloudSync.isAuthenticated();
+  const syncLabel = isAuth ? (cloudSync.getUser()?.displayName || cloudSync.getUser()?.email || "Connected") : "Not Connected";
+
   showModal(`
     <div class="modal-title">Global Settings</div>
     <div class="modal-field"><label class="modal-label">Appearance Mode</label>
@@ -365,6 +419,7 @@ function openSettingsModal() {
       </select>
     </div>
     <div class="modal-separator"></div>
+    <button class="modal-btn secondary" id="m-cloud-sync-btn" style="width:100%;margin-bottom:8px">☁ Cloud Sync (${esc(syncLabel)})</button>
     <button class="modal-btn secondary" id="m-update" style="width:100%;margin-bottom:8px">🔄 Check for Updates</button>
     <button class="modal-btn secondary" id="m-help" style="width:100%;margin-bottom:8px">❓ How to Use (Help)</button>
     <button class="modal-btn secondary" id="m-about" style="width:100%;margin-bottom:16px">👨‍💻 About Developer</button>
@@ -379,6 +434,7 @@ function openSettingsModal() {
     applyTheme();
     closeModal(); renderFriends(); toast("Settings saved!", "success");
   });
+  $("#m-cloud-sync-btn").addEventListener("click", () => { closeModal(); openCloudSyncModal(); });
   $("#m-update").addEventListener("click", () => { closeModal(); openUpdateCheck(); });
   $("#m-help").addEventListener("click", () => { closeModal(); openHelp(); });
   $("#m-about").addEventListener("click", () => { closeModal(); openAbout(); });
@@ -650,4 +706,148 @@ function toast(msg, type = "success") {
   el.textContent = msg; el.className = `toast ${type}`;
   requestAnimationFrame(() => el.classList.add("show"));
   setTimeout(() => el.classList.remove("show"), 2500);
+}
+
+// ═══════════════════ CLOUD SYNC UI & ACTIONS ═══════════════════
+function updateSyncIndicator() {
+  const btn = $("#btn-sync");
+  const dot = $("#sync-dot");
+  if (!btn || !dot) return;
+
+  if (typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
+    btn.classList.add("connected");
+    dot.classList.remove("hidden");
+    const user = cloudSync.getUser();
+    btn.title = `Cloud Sync: Connected (${user?.displayName || user?.email || "Google Account"})`;
+  } else {
+    btn.classList.remove("connected");
+    dot.classList.add("hidden");
+    btn.title = "Cloud Sync: Sign in with Google";
+  }
+}
+
+async function performSync(isSilent = false) {
+  if (typeof cloudSync === "undefined" || !cloudSync.isAuthenticated()) return;
+  const btn = $("#btn-sync");
+  if (btn) btn.classList.add("syncing");
+
+  try {
+    const success = await cloudSync.sync(data);
+    if (success) {
+      refreshUI();
+      updateSyncIndicator();
+      if (!isSilent) toast("Cloud sync completed!", "success");
+    }
+  } catch (e) {
+    console.error("Cloud sync error:", e);
+    if (!isSilent) toast("Sync error: " + (e.message || "Failed"), "error");
+  } finally {
+    if (btn) btn.classList.remove("syncing");
+  }
+}
+
+function openCloudSyncModal() {
+  if (typeof cloudSync === "undefined") {
+    toast("Sync engine not loaded", "error");
+    return;
+  }
+
+  const user = cloudSync.getUser();
+  const isAuth = cloudSync.isAuthenticated();
+  const redirectUri = (typeof chrome !== "undefined" && chrome.identity) ? chrome.identity.getRedirectURL() : "";
+  const lastSyncStr = cloudSync.lastSyncTime
+    ? new Date(cloudSync.lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : "Never";
+
+  if (isAuth && user) {
+    const avatarContent = user.photoUrl
+      ? `<img src="${esc(user.photoUrl)}" alt="Avatar">`
+      : `<span>${esc((user.displayName || user.email || "U")[0].toUpperCase())}</span>`;
+
+    showModal(`
+      <div class="modal-title">☁ Cloud Synchronization</div>
+      <div class="sync-card">
+        <div class="sync-avatar">${avatarContent}</div>
+        <div class="sync-details">
+          <div class="sync-user-name">${esc(user.displayName || "Google User")}</div>
+          <div class="sync-user-email">${esc(user.email || "")}</div>
+          <div class="sync-time">Last synced: ${lastSyncStr}</div>
+        </div>
+      </div>
+      <div class="sync-info-box">
+        ✅ Connected to Firebase Cloud Firestore. Profiles and friend lists are synced with your Android SSR app in real-time.
+      </div>
+      <div class="modal-actions" style="margin-bottom:8px;">
+        <button class="modal-btn primary" id="m-sync-now">🔄 Sync Now</button>
+        <button class="modal-btn danger" id="m-signout">🚪 Sign Out</button>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn secondary" data-close-modal>Close</button>
+      </div>
+    `);
+
+    $("#m-sync-now").addEventListener("click", async () => {
+      const btn = $("#m-sync-now");
+      btn.disabled = true;
+      btn.textContent = "⏳ Syncing...";
+      await performSync(false);
+      closeModal();
+      openCloudSyncModal();
+    });
+
+    $("#m-signout").addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to sign out? Your profiles and contacts will remain saved locally.")) return;
+      await cloudSync.signOut();
+      updateSyncIndicator();
+      closeModal();
+      toast("Signed out", "success");
+    });
+  } else {
+    // Not signed in
+    showModal(`
+      <div class="modal-title">☁ Cloud Synchronization</div>
+      <div class="sync-info-box">
+        Sign in with Google to sync your Snapchat profiles and friend lists with your <strong>Android SSR App</strong> via Cloud Firestore.
+      </div>
+
+      <button class="google-btn" id="m-google-signin">
+        <svg class="google-icon" viewBox="0 0 24 24">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+        </svg>
+        Sign in with Google
+      </button>
+
+      <div class="sync-hint">
+        <strong>Setup Note:</strong> If Google sign-in fails or shows a redirect URI mismatch, add this Extension Redirect URI to your Google Cloud Console OAuth 2.0 Web Client credentials:
+        <br><br>
+        <code style="background:var(--card-bg);padding:6px 8px;border-radius:4px;word-break:break-all;display:block;font-size:11px;user-select:all;border:1px solid var(--separator);">${esc(redirectUri || "chrome.identity.getRedirectURL()")}</code>
+      </div>
+
+      <div class="modal-actions" style="margin-top:14px;">
+        <button class="modal-btn secondary" data-close-modal>Cancel</button>
+      </div>
+    `);
+
+    $("#m-google-signin").addEventListener("click", async () => {
+      const btn = $("#m-google-signin");
+      btn.disabled = true;
+      btn.innerHTML = `<span>⏳ Signing in with Google...</span>`;
+      try {
+        await cloudSync.signInWithGoogle();
+        updateSyncIndicator();
+        toast("Signed in successfully!", "success");
+        await performSync(false);
+        closeModal();
+        openCloudSyncModal();
+      } catch (err) {
+        console.error("Sign-in failed:", err);
+        toast("Sign in failed: " + (err.message || "Unknown error"), "error");
+        btn.disabled = false;
+        btn.innerHTML = `<svg class="google-icon" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>Sign in with Google`;
+      }
+    });
+  }
 }
