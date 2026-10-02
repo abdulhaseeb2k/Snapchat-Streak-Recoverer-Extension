@@ -174,6 +174,55 @@ class CloudSyncEngine {
 
   /* ────────────────────────── BI-DIRECTIONAL SYNC ────────────────────────── */
 
+  deduplicateLocalProfiles(localProfiles) {
+    const names = Object.keys(localProfiles);
+    let modified = false;
+    const deletedSyncIds = [];
+
+    for (let i = 0; i < names.length; i++) {
+      const nameA = names[i];
+      const profA = localProfiles[nameA];
+      if (!profA) continue;
+
+      const cleanA = nameA.replace(/\s*\(\d+\)$/, "").trim().toLowerCase();
+      const uA = (profA.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+
+      for (let j = i + 1; j < names.length; j++) {
+        const nameB = names[j];
+        const profB = localProfiles[nameB];
+        if (!profB) continue;
+
+        const cleanB = nameB.replace(/\s*\(\d+\)$/, "").trim().toLowerCase();
+        const uB = (profB.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+
+        const isUserMatch = uA && uB && uA === uB;
+        const isNameMatch = cleanA && cleanB && cleanA === cleanB;
+
+        if (isUserMatch || isNameMatch) {
+          profA.friends = profA.friends || [];
+          const bFriends = profB.friends || [];
+          for (const bf of bFriends) {
+            const bfUser = (bf.username || "").trim().replace(/^@/, "").toLowerCase();
+            if (!bfUser) continue;
+            if (!profA.friends.some(af => (af.username || "").trim().replace(/^@/, "").toLowerCase() === bfUser)) {
+              profA.friends.push(bf);
+            }
+          }
+          if ((profB.updatedAt || 0) > (profA.updatedAt || 0)) {
+            profA.settings = { ...profA.settings, ...profB.settings };
+            profA.updatedAt = profB.updatedAt;
+          }
+          if (profB.syncId && profB.syncId !== profA.syncId) {
+            deletedSyncIds.push(profB.syncId);
+          }
+          delete localProfiles[nameB];
+          modified = true;
+        }
+      }
+    }
+    return { modified, deletedSyncIds };
+  }
+
   async sync(dataManager) {
     if (!this.isAuthenticated() || this.isSyncing) return false;
     this.isSyncing = true;
@@ -198,6 +247,36 @@ class CloudSyncEngine {
         throw new Error(err.error?.message || "Failed to fetch remote profiles");
       }
 
+      // Clean up local duplicates first
+      const { modified: dedupModified, deletedSyncIds } = this.deduplicateLocalProfiles(dataManager.profiles);
+      let localModified = dedupModified;
+
+      // Soft-delete local duplicate syncIds on remote
+      for (const dSyncId of deletedSyncIds) {
+        await this.markProfileDeleted(dSyncId);
+      }
+
+      // Deduplicate remote profiles (clean up duplicate Firestore docs)
+      const seenRemote = [];
+      for (const rp of remoteProfiles) {
+        if (rp.isDeleted) continue;
+        const rUser = (rp.snapchatUsername || "").trim().replace(/^@/, "").toLowerCase();
+        const rName = (rp.profileName || "").trim().toLowerCase();
+
+        const dup = seenRemote.find(s => {
+          const sUser = (s.snapchatUsername || "").trim().replace(/^@/, "").toLowerCase();
+          const sName = (s.profileName || "").trim().toLowerCase();
+          return (rUser && sUser && rUser === sUser) || (rName && sName && rName === sName);
+        });
+
+        if (dup) {
+          rp.isDeleted = true;
+          await this.markProfileDeleted(rp.syncId);
+        } else {
+          seenRemote.push(rp);
+        }
+      }
+
       // Map remote profiles by syncId
       const remoteMap = new Map();
       for (const rp of remoteProfiles) {
@@ -205,7 +284,6 @@ class CloudSyncEngine {
       }
 
       // 2. Reconcile Local Profiles
-      let localModified = false;
       const localProfiles = dataManager.profiles;
 
       for (const [profName, localProf] of Object.entries(localProfiles)) {
@@ -218,7 +296,22 @@ class CloudSyncEngine {
           localModified = true;
         }
 
-        const remote = remoteMap.get(localProf.syncId);
+        const lUser = (localProf.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+        const lName = profName.replace(/\s*\(\d+\)$/, "").trim().toLowerCase();
+
+        let remote = remoteMap.get(localProf.syncId);
+        if (!remote) {
+          // Match by username or profile name
+          remote = remoteProfiles.find(rp => !rp.isDeleted && (
+            (lUser && rp.snapchatUsername && (rp.snapchatUsername || "").trim().replace(/^@/, "").toLowerCase() === lUser) ||
+            (lName && rp.profileName && (rp.profileName || "").trim().toLowerCase() === lName)
+          ));
+          if (remote) {
+            localProf.syncId = remote.syncId;
+            localModified = true;
+          }
+        }
+
         if (!remote) {
           // Profile exists locally but not in remote -> push to remote
           await this.pushRemoteProfile(uid, token, localProf.syncId, profName, localProf);
@@ -251,16 +344,34 @@ class CloudSyncEngine {
       // 3. Add remote profiles that don't exist locally
       for (const [syncId, rp] of remoteMap.entries()) {
         if (rp.isDeleted) continue;
-        const existsLocally = Object.values(localProfiles).some(lp => lp.syncId === syncId);
-        if (!existsLocally) {
-          let profileKey = rp.profileName || rp.snapchatUsername || ("Profile " + syncId.substring(0, 4));
-          // If name collision, append a number
-          let counter = 1;
-          const origKey = profileKey;
-          while (localProfiles[profileKey]) {
-            profileKey = `${origKey} (${counter++})`;
-          }
+        const rUser = (rp.snapchatUsername || "").trim().replace(/^@/, "").toLowerCase();
+        const rName = (rp.profileName || "").trim().toLowerCase();
 
+        const localEntry = Object.entries(localProfiles).find(([name, lp]) => {
+          if (lp.syncId === syncId) return true;
+          const u = (lp.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+          if (rUser && u && rUser === u) return true;
+          if (rName && name.replace(/\s*\(\d+\)$/, "").trim().toLowerCase() === rName) return true;
+          return false;
+        });
+
+        if (localEntry) {
+          const [localKey, lp] = localEntry;
+          lp.syncId = syncId;
+          if ((rp.updatedAt || 0) > (lp.updatedAt || 0)) {
+            lp.settings = {
+              username: rp.snapchatUsername || "",
+              email: rp.email || "",
+              mobile_number: rp.mobileNumber || "",
+              device: rp.device || "",
+              refresh_delay: rp.refreshDelay || 1.0
+            };
+            lp.updatedAt = rp.updatedAt;
+            localModified = true;
+          }
+          await this.syncFriendsForProfile(uid, token, syncId, lp);
+        } else {
+          let profileKey = rp.profileName || rp.snapchatUsername || ("Profile " + syncId.substring(0, 4));
           localProfiles[profileKey] = {
             syncId: rp.syncId,
             settings: {
@@ -273,7 +384,6 @@ class CloudSyncEngine {
             friends: [],
             updatedAt: rp.updatedAt || Date.now()
           };
-          // Fetch its friends
           await this.syncFriendsForProfile(uid, token, rp.syncId, localProfiles[profileKey]);
           localModified = true;
         }
@@ -328,7 +438,15 @@ class CloudSyncEngine {
         modified = true;
       }
 
-      const rf = remoteFriendMap.get(lf.syncId);
+      let rf = remoteFriendMap.get(lf.syncId);
+      if (!rf && lf.username) {
+        rf = remoteFriends.find(r => !r.isDeleted && r.username && r.username.toLowerCase().trim() === lf.username.toLowerCase().trim());
+        if (rf) {
+          lf.syncId = rf.syncId;
+          modified = true;
+        }
+      }
+
       if (!rf) {
         await this.pushRemoteFriend(uid, token, profileSyncId, lf.syncId, lf);
       } else if (rf.isDeleted) {
@@ -351,11 +469,17 @@ class CloudSyncEngine {
       modified = true;
     }
 
-    // Add new remote friends
+    // Add new remote friends (avoiding duplicates)
     for (const [syncId, rf] of remoteFriendMap.entries()) {
       if (rf.isDeleted) continue;
-      const hasLocal = localProf.friends.some(f => f.syncId === syncId || (f.username && f.username.toLowerCase() === (rf.username || "").toLowerCase()));
-      if (!hasLocal) {
+      const rfUser = (rf.username || "").trim().toLowerCase();
+      const localMatch = localProf.friends.find(f => f.syncId === syncId || (rfUser && f.username && f.username.toLowerCase().trim() === rfUser));
+      if (localMatch) {
+        if (localMatch.syncId !== syncId) {
+          localMatch.syncId = syncId;
+          modified = true;
+        }
+      } else {
         localProf.friends.push({
           syncId: rf.syncId,
           name: rf.displayName || rf.username,

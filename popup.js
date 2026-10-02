@@ -22,6 +22,57 @@ class DataManager {
     this.profiles = data.profiles || {};
     this.currentProfile = data.currentProfile || Object.keys(this.profiles)[0] || null;
     this.appSettings = { ...DEFAULT_APP, ...data.appSettings };
+    await this.cleanupDuplicates();
+  }
+
+  async cleanupDuplicates() {
+    const names = Object.keys(this.profiles);
+    let modified = false;
+    for (let i = 0; i < names.length; i++) {
+      const nameA = names[i];
+      const profA = this.profiles[nameA];
+      if (!profA) continue;
+      const cleanA = nameA.replace(/\s*\(\d+\)$/, "").replace(/\s*\(Imported(?:\s*\d+)?\)$/, "").trim().toLowerCase();
+      const uA = (profA.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+
+      for (let j = i + 1; j < names.length; j++) {
+        const nameB = names[j];
+        const profB = this.profiles[nameB];
+        if (!profB) continue;
+        const cleanB = nameB.replace(/\s*\(\d+\)$/, "").replace(/\s*\(Imported(?:\s*\d+)?\)$/, "").trim().toLowerCase();
+        const uB = (profB.settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+
+        const isUserMatch = uA && uB && uA === uB;
+        const isNameMatch = cleanA && cleanB && cleanA === cleanB;
+
+        if (isUserMatch || isNameMatch) {
+          profA.friends = profA.friends || [];
+          const bFriends = profB.friends || [];
+          for (const bf of bFriends) {
+            const bfUser = (bf.username || "").trim().replace(/^@/, "").toLowerCase();
+            if (!bfUser) continue;
+            if (!profA.friends.some(af => (af.username || "").trim().replace(/^@/, "").toLowerCase() === bfUser)) {
+              profA.friends.push(bf);
+            }
+          }
+          if ((profB.updatedAt || 0) > (profA.updatedAt || 0)) {
+            profA.settings = { ...profA.settings, ...profB.settings };
+            profA.updatedAt = profB.updatedAt;
+          }
+          if (profB.syncId && typeof cloudSync !== "undefined" && cloudSync.isAuthenticated()) {
+            cloudSync.markProfileDeleted(profB.syncId);
+          }
+          delete this.profiles[nameB];
+          modified = true;
+        }
+      }
+    }
+    if (modified) {
+      if (!this.profiles[this.currentProfile]) {
+        this.currentProfile = Object.keys(this.profiles)[0] || null;
+      }
+      await this.saveProfiles();
+    }
   }
 
   async saveProfiles() {
@@ -43,7 +94,23 @@ class DataManager {
   }
 
   addProfile(name, settings) {
-    if (this.profiles[name]) return false;
+    const cleanUser = (settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+    const cleanName = name.trim().toLowerCase();
+
+    // Check if an existing profile matches by name or username
+    const existingKey = Object.keys(this.profiles).find(k => {
+      if (k.trim().toLowerCase() === cleanName) return true;
+      const u = (this.profiles[k].settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+      if (cleanUser && u && cleanUser === u) return true;
+      return false;
+    });
+
+    if (existingKey) {
+      this.profiles[existingKey].settings = { ...this.profiles[existingKey].settings, ...(settings || {}) };
+      this.profiles[existingKey].updatedAt = Date.now();
+      return true;
+    }
+
     const syncId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : "ext-p-" + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
     this.profiles[name] = {
       syncId,
@@ -671,12 +738,32 @@ function importProfiles() {
       const text = await file.text();
       const imported = JSON.parse(text);
       if (typeof imported !== "object" || !Object.keys(imported).length) { toast("Invalid format", "error"); return; }
-      let count = 0;
       for (const [origName, pdata] of Object.entries(imported)) {
         if (!pdata.settings || !pdata.friends) continue;
-        let name = origName, c = 1;
-        while (data.profiles[name]) { name = c > 1 ? `${origName} (Imported ${c})` : `${origName} (Imported)`; c++; }
-        data.profiles[name] = pdata; count++;
+        const impUser = (pdata.settings.username || "").trim().replace(/^@/, "").toLowerCase();
+        const existingKey = Object.keys(data.profiles).find(k => {
+          if (k.trim().toLowerCase() === origName.trim().toLowerCase()) return true;
+          const u = (data.profiles[k].settings?.username || "").trim().replace(/^@/, "").toLowerCase();
+          if (impUser && u && impUser === u) return true;
+          return false;
+        });
+
+        if (existingKey) {
+          const target = data.profiles[existingKey];
+          target.settings = { ...target.settings, ...pdata.settings };
+          target.friends = target.friends || [];
+          for (const f of pdata.friends) {
+            const fUser = (f.username || "").trim().replace(/^@/, "").toLowerCase();
+            if (!fUser) continue;
+            if (!target.friends.some(tf => (tf.username || "").trim().replace(/^@/, "").toLowerCase() === fUser)) {
+              target.friends.push(f);
+            }
+          }
+          target.updatedAt = Date.now();
+        } else {
+          data.profiles[origName] = pdata;
+        }
+        count++;
       }
       if (count) { await data.saveProfiles(); refreshUI(); toast(`Imported ${count} account(s)!`, "success"); }
       else toast("No valid profiles found", "error");
